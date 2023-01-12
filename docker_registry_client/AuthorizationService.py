@@ -5,6 +5,7 @@ except ImportError:
 # import urlparse
 import requests
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -19,10 +20,11 @@ class AuthorizationService(object):
     authenticate to the registry. Token has to be renew each time we change
     "scope".
     """
+
     def __init__(self, registry, url="", auth=None, verify=False,
                  api_timeout=None):
         # Registry ip:port
-        self.registry = urlsplit(registry).netloc
+        self.registry = registry
         # Service url, ip:port
         self.url = url
         # Authentication (user, password) or None. Used by request to do
@@ -54,8 +56,25 @@ class AuthorizationService(object):
             self.token_required = False
 
     def get_new_token(self):
-        rsp = requests.get("%s/v2/token?service=%s&scope=%s" %
-                           (self.url, self.registry, self.desired_scope),
+        rsp = requests.get("%s/v2/" % (self.registry),
+                           verify=self.verify,
+                           timeout=self.api_timeout)
+        if rsp.status_code != 401:
+            raise Exception("can not get auth realm info as expected")
+
+        reg = re.compile('(\w+)[:=] ?"?([^"]+)"?')
+        authInfo = reg.findall(rsp.headers['www-authenticate'])
+        for item in authInfo:
+            match item[0]:
+                case "realm":
+                    realm = item[1]
+                case "service":
+                    service = item[1]
+        if not realm:
+            raise Exception("can not get auth realm info as expected")
+
+        rsp = requests.get("%s?service=%s&scope=%s" %
+                           (realm, service, self.desired_scope),
                            auth=self.auth, verify=self.verify,
                            timeout=self.api_timeout)
         if not rsp.ok:

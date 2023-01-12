@@ -1,4 +1,5 @@
 import logging
+import copy
 from requests import get, put, delete
 from requests.exceptions import HTTPError
 import json
@@ -150,6 +151,12 @@ class BaseClientV2(CommonBaseClient):
     schema_1_signed = BASE_CONTENT_TYPE + '.v1+prettyjws'
     schema_1 = BASE_CONTENT_TYPE + '.v1+json'
     schema_2 = BASE_CONTENT_TYPE + '.v2+json'
+    schema_list = BASE_CONTENT_TYPE + '.list.v2+json'
+    oci_schema_index = 'application/vnd.oci.image.index.v1+json'
+    oci_schema_manifext = 'application/vnd.oci.image.manifest.v1+json'
+    schemas = [
+        schema_1_signed, schema_1, schema_2, schema_list, oci_schema_index, oci_schema_manifext
+    ]
 
     def __init__(self, *args, **kwargs):
         auth_service_url = kwargs.pop("auth_service_url", "")
@@ -169,14 +176,17 @@ class BaseClientV2(CommonBaseClient):
 
     def check_status(self):
         self.auth.desired_scope = 'registry:catalog:*'
+        self.auth.token_required = False
         return self._http_call('/v2/', get)
 
     def catalog(self):
         self.auth.desired_scope = 'registry:catalog:*'
+        self.auth.token_required = False
         return self._http_call('/v2/_catalog', get)
 
     def get_repository_tags(self, name):
         self.auth.desired_scope = 'repository:%s:*' % name
+        self.auth.token_required = True
         return self._http_call(self.LIST_TAGS, get, name=name)
 
     def get_manifest_and_digest(self, name, reference):
@@ -185,9 +195,10 @@ class BaseClientV2(CommonBaseClient):
 
     def get_manifest(self, name, reference):
         self.auth.desired_scope = 'repository:%s:*' % name
+        self.auth.token_required = True
         response = self._http_response(
             self.MANIFEST, get, name=name, reference=reference,
-            schema=self.schema_1_signed,
+            schema=', '.join(self.schemas),
         )
         self._cache_manifest_digest(name, reference, response=response)
         return _Manifest(
@@ -198,6 +209,7 @@ class BaseClientV2(CommonBaseClient):
 
     def put_manifest(self, name, reference, manifest):
         self.auth.desired_scope = 'repository:%s:*' % name
+        self.auth.token_required = True
         content = {}
         content.update(manifest._content)
         content.update({'name': name, 'tag': reference})
@@ -210,11 +222,13 @@ class BaseClientV2(CommonBaseClient):
 
     def delete_manifest(self, name, digest):
         self.auth.desired_scope = 'repository:%s:*' % name
+        self.auth.token_required = True
         return self._http_call(self.MANIFEST, delete,
                                name=name, reference=digest)
 
     def delete_blob(self, name, digest):
         self.auth.desired_scope = 'repository:%s:*' % name
+        self.auth.token_required = True
         return self._http_call(self.BLOB, delete,
                                name=name, digest=digest)
 
@@ -235,7 +249,7 @@ class BaseClientV2(CommonBaseClient):
         """
 
         if schema is None:
-            schema = self.schema_2
+            schema = ', '.join(self.schemas)
 
         header = {
             'content-type': content_type or 'application/json',
@@ -248,6 +262,7 @@ class BaseClientV2(CommonBaseClient):
         token = auth.token
         desired_scope = auth.desired_scope
         scope = auth.scope
+        args_for_req = copy.deepcopy(self.method_kwargs)
 
         if token_required:
             if not token or desired_scope != scope:
@@ -255,14 +270,16 @@ class BaseClientV2(CommonBaseClient):
                 auth.get_new_token()
 
             header['Authorization'] = 'Bearer %s' % self.auth.token
+            args_for_req['auth'] = None
 
         if data and not content_type:
             data = json.dumps(data)
 
         path = url.format(**kwargs)
         logger.debug("%s %s", method.__name__.upper(), path)
+
         response = method(self.host + path,
-                          data=data, headers=header, **self.method_kwargs)
+                          data=data, headers=header, **args_for_req)
         logger.debug("%s %s", response.status_code, response.reason)
         response.raise_for_status()
 
